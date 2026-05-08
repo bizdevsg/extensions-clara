@@ -1,13 +1,14 @@
 {
   "name": "sg-extension",
   "displayName": "Sg extension",
-  "version": "0.0.1",
+  "version": "0.0.27",
   "description": "A basic Plasmo extension.",
   "author": "newsmaker.id",
   "scripts": {
     "dev": "plasmo dev",
     "build": "plasmo build",
-    "package": "plasmo package"
+    "package": "plasmo package",
+    "proxy": "node server/openai-proxy.mjs"
   },
   "dependencies": {
     "plasmo": "0.90.5",
@@ -24,8 +25,17 @@
     "typescript": "5.3.3"
   },
   "manifest": {
+    "permissions": [
+      "tabs",
+      "scripting"
+    ],
     "host_permissions": [
+      "http://localhost/*",
+      "http://127.0.0.1/*",
       "https://*/*"
-    ]
+    ],
+    "content_security_policy": {
+      "extension_pages": "script-src 'self' http://localhost; object-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://*;"
+    }
   }
 }
