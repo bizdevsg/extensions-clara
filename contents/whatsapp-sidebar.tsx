@@ -936,10 +936,6 @@ const Sidebar = () => {
             <h2 className="sg-card-title">
               {chatData?.chatTitle || "Belum ada chat aktif"}
             </h2>
-            <p className="sg-card-copy">
-              {chatData?.chatSubtitle ||
-                "Buka percakapan dulu di WhatsApp Web untuk menampilkan isi chat di sidebar ini."}
-            </p>
 
             <div className="sg-metric-row">
               <div className="sg-metric">
