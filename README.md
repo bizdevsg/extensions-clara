@@ -5,8 +5,8 @@ This is a [Plasmo extension](https://docs.plasmo.com/) project bootstrapped with
 Agar user tidak perlu memasukkan OpenAI token di popup extension, project ini sekarang memakai proxy server kecil:
 
 1. Extension membaca chat aktif dari WhatsApp Web.
-2. Extension mengirim snapshot chat ke proxy endpoint.
-3. Proxy yang menyimpan `OPENAI_API_KEY` memanggil OpenAI Responses API.
+2. Extension mengirim snapshot chat ke API lokal `/chat-snapshots`.
+3. Proxy yang menyimpan `OPENAI_API_KEY` memanggil OpenAI Responses API lewat endpoint `/reply-suggestions`.
 4. Proxy mengembalikan 3 saran balasan ke popup.
 
 OpenAI sendiri menyarankan API key tidak diekspos di kode client-side/browser apps.
@@ -49,6 +49,42 @@ Default endpoint proxy:
 http://127.0.0.1:9898/reply-suggestions
 ```
 
+API hasil scraping chat:
+
+```text
+POST http://127.0.0.1:9898/chat-snapshots
+GET  http://127.0.0.1:9898/chat-snapshots
+GET  http://127.0.0.1:9898/chat-snapshots/latest
+```
+
+Contoh body untuk menyimpan snapshot hasil scraping:
+
+```json
+{
+  "chatData": {
+    "capturedAt": "2026-05-12T00:00:00.000Z",
+    "chatTitle": "Nama Kontak / Grup",
+    "chatSubtitle": "online",
+    "messages": [
+      {
+        "id": "10.00-0",
+        "author": "Budi",
+        "direction": "incoming",
+        "text": "Halo",
+        "timestampLabel": "10.00"
+      }
+    ]
+  }
+}
+```
+
+Popup akan otomatis mengirim hasil scraping terbaru ke endpoint ini saat chat dibaca atau berubah.
+
+API ini sekarang menyimpan 1 snapshot terbaru saja, jadi isi response akan selalu mengikuti chat yang terakhir sedang dibuka dan dibaca oleh extension.
+Kalau tidak ada chat yang sedang dibuka, extension akan mengosongkan snapshot aktif dan API akan mengembalikan `snapshot: null`.
+
+Response `GET /chat-snapshots` dan `GET /chat-snapshots/latest` akan mengembalikan satu object `snapshot` berisi field chat seperti `capturedAt`, `chatTitle`, `chatSubtitle`, dan `messages`, plus metadata `id` dan `savedAt`.
+
 Health check:
 
 ```text
@@ -57,6 +93,7 @@ http://127.0.0.1:9898/health
 ```
 
 Kalau dibuka langsung di browser ke `/reply-suggestions`, proxy akan kasih info bahwa endpoint itu memang harus dipanggil dengan method `POST`.
+Kalau `OPENAI_API_KEY` belum diisi, endpoint `/chat-snapshots` tetap bisa dipakai, tapi `/reply-suggestions` akan mengembalikan error `503`.
 
 Kalau mau ganti endpoint dari sisi extension, set env ini saat build/dev:
 
@@ -67,6 +104,7 @@ $env:PLASMO_PUBLIC_OPENAI_PROXY_URL="https://domain-kamu/reply-suggestions"
 Catatan:
 
 - File `.env` otomatis dibaca oleh [server/openai-proxy.mjs](</d:/Website JS/sg-extension/server/openai-proxy.mjs>) saat startup.
+- Hasil scraping chat disimpan lokal di `server/data/whatsapp-chat-snapshots.json`.
 - File `.env` sudah dimasukkan ke [`.gitignore`](</d:/Website JS/sg-extension/.gitignore>) supaya key tidak ikut ter-commit.
 
 ## Getting Started

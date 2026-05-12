@@ -3,13 +3,21 @@ import { useEffect, useMemo, useState } from "react"
 import type {
   WhatsAppActionResponse,
   WhatsAppChatSnapshot,
+  WhatsAppMessage,
+  WhatsAppMessageDirection,
   WhatsAppReadResponse
 } from "~/types/whatsapp"
-import { getConfiguredProxyUrl, getProxyCandidates } from "~/utils/proxy"
+import {
+  getChatSnapshotProxyUrl,
+  getConfiguredProxyUrl,
+  getProxyCandidates
+} from "~/utils/proxy"
 
 const OPENAI_PROXY_URL = getConfiguredProxyUrl()
+const CHAT_SNAPSHOT_PROXY_URL = getChatSnapshotProxyUrl(OPENAI_PROXY_URL)
 const INSERT_LOCK_KEY = "__sgExtensionPopupInsertLock__"
 const AUTO_REFRESH_INTERVAL_MS = 2500
+const SUGGESTION_TONE_LABELS = ["Friendly", "Casual", "Profesional"] as const
 
 const popupStyle = {
   background:
@@ -346,20 +354,34 @@ const readWhatsAppFromPage = (): WhatsAppReadResponse => {
     return ""
   }
 
-  const getMessageDirection = (container: HTMLElement) => {
+  const getMessageDirection = (
+    container: HTMLElement
+  ): WhatsAppMessageDirection => {
     const bubble = container.closest(".message-out, .message-in")
 
     return bubble?.classList.contains("message-out") ? "outgoing" : "incoming"
   }
 
+  const getLeafTextCandidates = (nodes: HTMLElement[]) => {
+    return nodes.filter(
+      (node) =>
+        !nodes.some((otherNode) => otherNode !== node && node.contains(otherNode))
+    )
+  }
+
   const getMessageText = (container: HTMLElement) => {
-    const candidates = [
-      ...Array.from(
+    const primaryCandidates = getLeafTextCandidates(
+      Array.from(container.querySelectorAll<HTMLElement>('[data-testid="msg-text"]'))
+    )
+    const fallbackCandidates = getLeafTextCandidates(
+      Array.from(
         container.querySelectorAll<HTMLElement>(
-          '[data-testid="selectable-text"], .copyable-text, [data-testid="msg-text"]'
+          '[data-testid="selectable-text"], .copyable-text'
         )
       )
-    ]
+    )
+    const candidates =
+      primaryCandidates.length > 0 ? primaryCandidates : fallbackCandidates
 
     const uniqueTexts = Array.from(
       new Set(
@@ -403,7 +425,7 @@ const readWhatsAppFromPage = (): WhatsAppReadResponse => {
     )
   )
 
-  const messages = messageContainers
+  const messages: WhatsAppMessage[] = messageContainers
     .map((container, index) => {
       const metaSource =
         container
@@ -426,7 +448,7 @@ const readWhatsAppFromPage = (): WhatsAppReadResponse => {
         timestampLabel: parsedMeta.timestampLabel
       }
     })
-    .filter(Boolean)
+    .filter((message): message is WhatsAppMessage => Boolean(message))
 
   return {
     data: {
@@ -487,6 +509,88 @@ const fetchSuggestionsFromProxyDirectly = async (
     `Gagal menghubungi proxy di ${OPENAI_PROXY_URL}. Detail: ${lastFetchError || "Failed to fetch"}`
   )
 }
+
+const syncChatSnapshotToProxy = async (chatData: WhatsAppChatSnapshot) => {
+  let lastFetchError = ""
+
+  for (const proxyUrl of getProxyCandidates(CHAT_SNAPSHOT_PROXY_URL)) {
+    try {
+      const response = await fetch(proxyUrl, {
+        body: JSON.stringify({
+          chatData
+        }),
+        headers: {
+          "Content-Type": "application/json"
+        },
+        method: "POST"
+      })
+
+      const payload = await response.json()
+
+      if (!response.ok) {
+        throw new Error(
+          payload?.error ||
+            `API snapshot chat gagal memproses data scraping di ${proxyUrl}.`
+        )
+      }
+
+      return {
+        duplicate: Boolean(payload?.duplicate),
+        snapshotId:
+          typeof payload?.snapshot?.id === "string" ? payload.snapshot.id : ""
+      }
+    } catch (error) {
+      lastFetchError =
+        error instanceof Error ? error.message : "Failed to fetch"
+    }
+  }
+
+  throw new Error(
+    `Gagal menghubungi API snapshot di ${CHAT_SNAPSHOT_PROXY_URL}. Detail: ${lastFetchError || "Failed to fetch"}`
+  )
+}
+
+const clearChatSnapshotInProxy = async () => {
+  let lastFetchError = ""
+
+  for (const proxyUrl of getProxyCandidates(CHAT_SNAPSHOT_PROXY_URL)) {
+    try {
+      const response = await fetch(proxyUrl, {
+        body: JSON.stringify({
+          chatData: null
+        }),
+        headers: {
+          "Content-Type": "application/json"
+        },
+        method: "POST"
+      })
+
+      const payload = await response.json()
+
+      if (!response.ok) {
+        throw new Error(
+          payload?.error || `API snapshot chat gagal mengosongkan data di ${proxyUrl}.`
+        )
+      }
+
+      return
+    } catch (error) {
+      lastFetchError =
+        error instanceof Error ? error.message : "Failed to fetch"
+    }
+  }
+
+  throw new Error(
+    `Gagal menghubungi API snapshot di ${CHAT_SNAPSHOT_PROXY_URL}. Detail: ${lastFetchError || "Failed to fetch"}`
+  )
+}
+
+const shouldClearSnapshotForError = (message: string) =>
+  [
+    "Belum ada percakapan yang sedang dibuka.",
+    "Buka WhatsApp Web dulu di tab aktif.",
+    "Panel chat WhatsApp Web belum ditemukan."
+  ].some((pattern) => message.includes(pattern))
 
 const requestSuggestionCandidates = async (chatData: WhatsAppChatSnapshot) => {
   try {
@@ -618,6 +722,21 @@ function IndexPopup() {
     try {
       const data = await readChatFromActiveTab()
       setChatData(data)
+
+      try {
+        const syncResult = await syncChatSnapshotToProxy(data)
+        setFeedback(
+          syncResult.duplicate
+            ? "Chat aktif berhasil dibaca. Snapshot yang sama sudah ada di API."
+            : "Chat aktif berhasil dibaca dan disimpan ke API."
+        )
+      } catch (syncError) {
+        setError(
+          syncError instanceof Error
+            ? `Chat berhasil dibaca, tapi gagal dikirim ke API: ${syncError.message}`
+            : "Chat berhasil dibaca, tapi gagal dikirim ke API."
+        )
+      }
     } catch (err) {
       const message =
         err instanceof Error
@@ -625,6 +744,13 @@ function IndexPopup() {
           : "Terjadi kendala saat membaca chat WhatsApp Web."
 
       setChatData(null)
+
+      if (shouldClearSnapshotForError(message)) {
+        clearChatSnapshotInProxy().catch(() => {
+          // Keep the original read error as the main feedback for the user.
+        })
+      }
+
       setError(message)
     } finally {
       setIsLoading(false)
@@ -644,6 +770,10 @@ function IndexPopup() {
 
       if (nextSignature !== chatSignature) {
         setChatData(data)
+
+        syncChatSnapshotToProxy(data).catch(() => {
+          // Silent refresh should not interrupt the current popup experience.
+        })
       }
 
       setError((currentError) =>
@@ -653,7 +783,17 @@ function IndexPopup() {
           ? ""
           : currentError
       )
-    } catch (_error) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+
+      if (shouldClearSnapshotForError(message)) {
+        setChatData(null)
+
+        clearChatSnapshotInProxy().catch(() => {
+          // Silent refresh should not interrupt the current popup experience.
+        })
+      }
+
       // Silent refresh should not interrupt the current popup experience.
     }
   }
@@ -712,6 +852,10 @@ function IndexPopup() {
       }
 
       setChatData(currentChatData)
+
+      syncChatSnapshotToProxy(currentChatData).catch(() => {
+        // Suggestion flow should continue even when snapshot sync is unavailable.
+      })
 
       const nextSuggestions = await requestSuggestionCandidates(currentChatData)
 
@@ -1037,7 +1181,7 @@ function IndexPopup() {
                         fontWeight: 800,
                         letterSpacing: "0.02em"
                       }}>
-                      Saran {index + 1}
+                      {SUGGESTION_TONE_LABELS[index] || `Saran ${index + 1}`}
                     </div>
                     <div style={{ color: "#7a8c98", fontSize: 11 }}>
                       Siap dipakai tanpa auto send

@@ -7,6 +7,11 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const repoRoot = path.resolve(__dirname, "..")
 const envFilePath = path.join(repoRoot, ".env")
+const chatSnapshotDirPath = path.join(repoRoot, "server", "data")
+const chatSnapshotFilePath = path.join(
+  chatSnapshotDirPath,
+  "whatsapp-chat-snapshots.json"
+)
 
 const isPlaceholderEnvValue = (value) => {
   const normalizedValue = String(value || "").trim()
@@ -53,14 +58,17 @@ const loadEnvFile = (filePath) => {
 
 loadEnvFile(envFilePath)
 
-const port = Number.parseInt(process.env.PORT || "8787", 10)
+const port = Number.parseInt(process.env.PORT || "9898", 10)
 const openaiApiKey = process.env.OPENAI_API_KEY
 const openaiModel = process.env.OPENAI_MODEL || "gpt-5.4-mini"
+const REPLY_SUGGESTIONS_PATH = "/reply-suggestions"
+const CHAT_SNAPSHOTS_PATH = "/chat-snapshots"
+const CHAT_SNAPSHOTS_LATEST_PATH = "/chat-snapshots/latest"
+const SUGGESTION_TONES = ["Friendly", "Casual", "Profesional"]
 
 if (!openaiApiKey) {
-  console.error("OPENAI_API_KEY belum di-set.")
-  console.error("Simpan key di file .env atau set environment variable terlebih dulu.")
-  process.exit(1)
+  console.warn("OPENAI_API_KEY belum di-set.")
+  console.warn("Endpoint /reply-suggestions akan mengembalikan error sampai key diisi.")
 }
 
 const buildSuggestionPrompt = (chatData) => {
@@ -103,19 +111,149 @@ const extractResponseText = (payload) => {
 }
 
 const parseSuggestions = (text) => {
-  return text
+  const suggestions = text
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => line.replace(/^\[SUGGESTION\]\s*/i, "").trim())
     .filter(Boolean)
     .slice(0, 3)
+
+  return SUGGESTION_TONES.map((tone, index) => {
+    const suggestion = suggestions[index] || ""
+
+    return suggestion.replace(new RegExp(`^${tone}\\s*[:|-]\\s*`, "i"), "").trim()
+  }).filter(Boolean)
+}
+
+const getRequestPath = (request) => {
+  const host = request.headers.host || `127.0.0.1:${port}`
+  const requestUrl = request.url || "/"
+
+  return new URL(requestUrl, `http://${host}`).pathname
+}
+
+const parseJsonBody = async (request) => {
+  const chunks = []
+
+  for await (const chunk of request) {
+    chunks.push(chunk)
+  }
+
+  const rawBody = Buffer.concat(chunks).toString("utf8")
+
+  return rawBody ? JSON.parse(rawBody) : {}
+}
+
+const isValidChatData = (chatData) =>
+  Boolean(
+    chatData &&
+      typeof chatData === "object" &&
+      typeof chatData.chatTitle === "string" &&
+      typeof chatData.chatSubtitle === "string" &&
+      typeof chatData.capturedAt === "string" &&
+      Array.isArray(chatData.messages)
+  )
+
+const readChatSnapshotRecord = () => {
+  if (!fs.existsSync(chatSnapshotFilePath)) {
+    return null
+  }
+
+  try {
+    const rawFile = fs.readFileSync(chatSnapshotFilePath, "utf8")
+    const parsedFile = JSON.parse(rawFile)
+
+    if (Array.isArray(parsedFile)) {
+      return parsedFile[parsedFile.length - 1] || null
+    }
+
+    return parsedFile && typeof parsedFile === "object" ? parsedFile : null
+  } catch (_error) {
+    return null
+  }
+}
+
+const writeChatSnapshotRecord = (snapshot) => {
+  fs.mkdirSync(chatSnapshotDirPath, { recursive: true })
+  fs.writeFileSync(chatSnapshotFilePath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8")
+}
+
+const clearChatSnapshotRecord = () => {
+  if (fs.existsSync(chatSnapshotFilePath)) {
+    fs.unlinkSync(chatSnapshotFilePath)
+  }
+}
+
+const getSnapshotChatData = (record) => {
+  if (isValidChatData(record?.chatData)) {
+    return record.chatData
+  }
+
+  if (isValidChatData(record)) {
+    return {
+      capturedAt: record.capturedAt,
+      chatSubtitle: record.chatSubtitle,
+      chatTitle: record.chatTitle,
+      messages: record.messages
+    }
+  }
+
+  return {
+    capturedAt: "",
+    chatSubtitle: "",
+    chatTitle: "",
+    messages: []
+  }
+}
+
+const sanitizeSnapshotRecord = (record) => ({
+  ...getSnapshotChatData(record),
+  id: record.id,
+  savedAt: record.savedAt
+})
+
+const createChatSnapshotSignature = (chatData) =>
+  JSON.stringify({
+    chatSubtitle: chatData?.chatSubtitle || "",
+    chatTitle: chatData?.chatTitle || "",
+    messages: Array.isArray(chatData?.messages) ? chatData.messages : []
+  })
+
+const storeChatSnapshot = (chatData) => {
+  const latestSnapshot = readChatSnapshotRecord()
+  const nextSignature = createChatSnapshotSignature(chatData)
+
+  if (latestSnapshot) {
+    const latestSignature = createChatSnapshotSignature(
+      getSnapshotChatData(latestSnapshot)
+    )
+
+    if (latestSignature === nextSignature) {
+      return {
+        duplicate: true,
+        latestSnapshot: sanitizeSnapshotRecord(latestSnapshot)
+      }
+    }
+  }
+
+  const nextRecord = {
+    ...chatData,
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    savedAt: new Date().toISOString()
+  }
+  writeChatSnapshotRecord(nextRecord)
+
+  return {
+    duplicate: false,
+    latestSnapshot: sanitizeSnapshotRecord(nextRecord)
+  }
 }
 
 const sendJson = (response, statusCode, payload) => {
   response.writeHead(statusCode, {
     "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Private-Network": "true",
     "Access-Control-Max-Age": "86400",
@@ -126,14 +264,24 @@ const sendJson = (response, statusCode, payload) => {
 }
 
 const server = http.createServer(async (request, response) => {
+  const requestPath = getRequestPath(request)
+
   console.log(
-    `[proxy] ${request.method} ${request.url} origin=${request.headers.origin || "-"}`
+    `[proxy] ${request.method} ${requestPath} origin=${request.headers.origin || "-"}`
   )
 
-  if (request.method === "GET" && (request.url === "/" || request.url === "/health")) {
+  if (request.method === "GET" && (requestPath === "/" || requestPath === "/health")) {
     sendJson(response, 200, {
-      endpoint: `http://127.0.0.1:${port}/reply-suggestions`,
-      method: "POST",
+      endpoints: {
+        latestChatSnapshot: `http://127.0.0.1:${port}${CHAT_SNAPSHOTS_LATEST_PATH}`,
+        replySuggestions: `http://127.0.0.1:${port}${REPLY_SUGGESTIONS_PATH}`,
+        storeChatSnapshot: `http://127.0.0.1:${port}${CHAT_SNAPSHOTS_PATH}`
+      },
+      methods: {
+        latestChatSnapshot: "GET",
+        replySuggestions: "POST",
+        storeChatSnapshot: "POST"
+      },
       model: openaiModel,
       ok: true,
       status: "Proxy aktif"
@@ -141,11 +289,47 @@ const server = http.createServer(async (request, response) => {
     return
   }
 
-  if (request.method === "GET" && request.url === "/reply-suggestions") {
+  if (request.method === "GET" && requestPath === REPLY_SUGGESTIONS_PATH) {
     sendJson(response, 200, {
-      endpoint: "/reply-suggestions",
+      endpoint: REPLY_SUGGESTIONS_PATH,
       message: "Gunakan method POST ke endpoint ini dengan body JSON berisi chatData.",
       ok: true
+    })
+    return
+  }
+
+  if (request.method === "GET" && requestPath === CHAT_SNAPSHOTS_PATH) {
+    const snapshotRecord = readChatSnapshotRecord()
+
+    if (!snapshotRecord) {
+      sendJson(response, 200, {
+        ok: true,
+        snapshot: null
+      })
+      return
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      snapshot: sanitizeSnapshotRecord(snapshotRecord)
+    })
+    return
+  }
+
+  if (request.method === "GET" && requestPath === CHAT_SNAPSHOTS_LATEST_PATH) {
+    const latestSnapshot = readChatSnapshotRecord()
+
+    if (!latestSnapshot) {
+      sendJson(response, 200, {
+        ok: true,
+        snapshot: null
+      })
+      return
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      snapshot: sanitizeSnapshotRecord(latestSnapshot)
     })
     return
   }
@@ -157,7 +341,10 @@ const server = http.createServer(async (request, response) => {
     return
   }
 
-  if (request.method !== "POST" || request.url !== "/reply-suggestions") {
+  if (
+    request.method !== "POST" ||
+    ![REPLY_SUGGESTIONS_PATH, CHAT_SNAPSHOTS_PATH].includes(requestPath)
+  ) {
     sendJson(response, 404, {
       error: "Route tidak ditemukan."
     })
@@ -165,19 +352,49 @@ const server = http.createServer(async (request, response) => {
   }
 
   try {
-    const chunks = []
-
-    for await (const chunk of request) {
-      chunks.push(chunk)
-    }
-
-    const rawBody = Buffer.concat(chunks).toString("utf8")
-    const body = rawBody ? JSON.parse(rawBody) : {}
+    const body = await parseJsonBody(request)
     const chatData = body?.chatData
 
-    if (!chatData || !Array.isArray(chatData?.messages) || chatData.messages.length === 0) {
+    if (requestPath === CHAT_SNAPSHOTS_PATH && chatData === null) {
+      clearChatSnapshotRecord()
+
+      sendJson(response, 200, {
+        cleared: true,
+        ok: true,
+        snapshot: null
+      })
+      return
+    }
+
+    if (!isValidChatData(chatData)) {
+      sendJson(response, 400, {
+        error:
+          "Body wajib berisi chatData dengan capturedAt, chatTitle, chatSubtitle, dan messages[]."
+      })
+      return
+    }
+
+    if (requestPath === CHAT_SNAPSHOTS_PATH) {
+      const { duplicate, latestSnapshot } = storeChatSnapshot(chatData)
+
+      sendJson(response, duplicate ? 200 : 201, {
+        duplicate,
+        ok: true,
+        snapshot: latestSnapshot
+      })
+      return
+    }
+
+    if (chatData.messages.length === 0) {
       sendJson(response, 400, {
         error: "chatData.messages wajib ada dan tidak boleh kosong."
+      })
+      return
+    }
+
+    if (!openaiApiKey) {
+      sendJson(response, 503, {
+        error: "OPENAI_API_KEY belum di-set. Endpoint /reply-suggestions belum bisa dipakai."
       })
       return
     }
@@ -186,7 +403,7 @@ const server = http.createServer(async (request, response) => {
       body: JSON.stringify({
         input: buildSuggestionPrompt(chatData),
         instructions:
-          "Kamu membantu menyusun saran balasan WhatsApp. Berikan tepat 3 opsi balasan singkat, natural, relevan, dan sesuai bahasa serta tone percakapan. Jangan menambahkan fakta baru. Setiap opsi harus berada di baris terpisah dan diawali persis dengan '[SUGGESTION] '. Jangan tambahkan teks lain selain 3 baris itu.",
+          "Kamu membantu menyusun saran balasan WhatsApp. Berikan tepat 3 opsi balasan singkat, natural, relevan, dan sesuai bahasa serta tone percakapan. Urutannya wajib: 1) Friendly, 2) Casual, 3) Profesional. Jangan menambahkan fakta baru. Setiap opsi harus berada di baris terpisah dan diawali persis dengan '[SUGGESTION] '. Isi tiap baris hanya teks balasannya saja, tanpa label tone, tanpa nomor, dan tanpa penjelasan tambahan.",
         max_output_tokens: 220,
         model: openaiModel
       }),
@@ -235,7 +452,7 @@ server.on("error", (error) => {
   if (error?.code === "EADDRINUSE") {
     console.error(`Port ${port} sedang dipakai proses lain.`)
     console.error("Matikan proses proxy/node lama atau ganti nilai PORT di file .env.")
-    console.error("Contoh PowerShell untuk cek proses: Get-NetTCPConnection -LocalPort 8787")
+    console.error("Contoh PowerShell untuk cek proses: Get-NetTCPConnection -LocalPort 9898")
     console.error("Contoh PowerShell untuk matikan proses: Stop-Process -Id <PID>")
     process.exit(1)
   }
@@ -245,7 +462,8 @@ server.on("error", (error) => {
 })
 
 server.listen(port, () => {
-  console.log(`OpenAI proxy aktif di http://127.0.0.1:${port}/reply-suggestions`)
+  console.log(`OpenAI proxy aktif di http://127.0.0.1:${port}${REPLY_SUGGESTIONS_PATH}`)
+  console.log(`API snapshot chat di http://127.0.0.1:${port}${CHAT_SNAPSHOTS_PATH}`)
   console.log(`Model default: ${openaiModel}`)
   console.log(`Sumber konfigurasi .env: ${fs.existsSync(envFilePath) ? envFilePath : "tidak ada"}`)
 })

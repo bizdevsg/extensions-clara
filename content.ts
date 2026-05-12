@@ -86,14 +86,25 @@ const getMessageDirection = (container: HTMLElement): WhatsAppMessageDirection =
   return bubble?.classList.contains("message-out") ? "outgoing" : "incoming"
 }
 
+const getLeafTextCandidates = (nodes: HTMLElement[]) => {
+  return nodes.filter(
+    (node) => !nodes.some((otherNode) => otherNode !== node && node.contains(otherNode))
+  )
+}
+
 const getMessageText = (container: HTMLElement) => {
-  const candidates = [
-    ...Array.from(
+  const primaryCandidates = getLeafTextCandidates(
+    Array.from(container.querySelectorAll<HTMLElement>('[data-testid="msg-text"]'))
+  )
+  const fallbackCandidates = getLeafTextCandidates(
+    Array.from(
       container.querySelectorAll<HTMLElement>(
-        '[data-testid="selectable-text"], .copyable-text, [data-testid="msg-text"]'
+        '[data-testid="selectable-text"], .copyable-text'
       )
     )
-  ]
+  )
+  const candidates =
+    primaryCandidates.length > 0 ? primaryCandidates : fallbackCandidates
 
   const uniqueTexts = Array.from(
     new Set(
