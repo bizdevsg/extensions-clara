@@ -37,8 +37,14 @@ export const getStyle = () => {
       z-index: 2147483646;
     }
 
+    .sg-shell[data-collapsed="true"] {
+      align-items: flex-end;
+      top: auto;
+    }
+
     .sg-rail,
-    .sg-panel {
+    .sg-panel,
+    .sg-floating-bubble {
       backdrop-filter: blur(18px) saturate(130%);
       background:
         linear-gradient(180deg, rgba(16, 18, 28, 0.96), rgba(8, 10, 16, 0.98)),
@@ -59,6 +65,10 @@ export const getStyle = () => {
       width: 68px;
     }
 
+    .sg-rail[data-hidden="true"] {
+      display: none;
+    }
+
     .sg-panel {
       border-radius: 30px;
       color: #f6f8ff;
@@ -71,6 +81,66 @@ export const getStyle = () => {
 
     .sg-panel[data-collapsed="true"] {
       display: none;
+    }
+
+    .sg-floating-bubble {
+      align-items: center;
+      border-radius: 999px;
+      color: #f6f8ff;
+      cursor: pointer;
+      display: none;
+      gap: 12px;
+      min-height: 64px;
+      padding: 10px 18px 10px 10px;
+      transition:
+        transform 150ms ease,
+        border-color 150ms ease,
+        filter 150ms ease;
+    }
+
+    .sg-floating-bubble[data-visible="true"] {
+      display: inline-flex;
+      pointer-events: auto;
+    }
+
+    .sg-floating-bubble:hover {
+      border-color: rgba(199, 208, 255, 0.24);
+      filter: brightness(1.04);
+      transform: translateY(-1px);
+    }
+
+    .sg-floating-bubble-mark {
+      align-items: center;
+      background: linear-gradient(135deg, #d9ff35, #5eaefc);
+      border-radius: 999px;
+      color: #09111d;
+      display: inline-flex;
+      font-family: "Aptos Display", "Segoe UI Variable Display", "Trebuchet MS", sans-serif;
+      font-size: 14px;
+      font-weight: 900;
+      height: 42px;
+      justify-content: center;
+      letter-spacing: 0.08em;
+      width: 42px;
+    }
+
+    .sg-floating-copy {
+      display: grid;
+      gap: 2px;
+      text-align: left;
+    }
+
+    .sg-floating-title {
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .sg-floating-subtitle {
+      color: rgba(216, 224, 255, 0.74);
+      font-size: 11px;
+      line-height: 1.3;
     }
 
     .sg-rail-button {
@@ -383,9 +453,18 @@ export const getStyle = () => {
         top: auto;
       }
 
+      .sg-shell[data-collapsed="true"] {
+        left: auto;
+      }
+
       .sg-panel {
         max-height: min(76vh, 760px);
         width: min(100%, 420px);
+      }
+
+      .sg-floating-bubble {
+        min-height: 58px;
+        padding-right: 16px;
       }
     }
   `
@@ -794,8 +873,8 @@ const Sidebar = () => {
   const statusTone = feedback ? "success" : "error"
 
   return (
-    <div className="sg-shell">
-      <div className="sg-rail">
+    <div className="sg-shell" data-collapsed={isCollapsed}>
+      <div className="sg-rail" data-hidden={isCollapsed}>
         <button
           className="sg-rail-button"
           data-active={activeView === "chat"}
@@ -996,6 +1075,23 @@ const Sidebar = () => {
           )}
         </div>
       </aside>
+
+      <button
+        className="sg-floating-bubble"
+        data-visible={isCollapsed}
+        aria-expanded={!isCollapsed}
+        aria-label="Buka SG tools sidebar"
+        onClick={() => {
+          setIsCollapsed(false)
+        }}>
+        <span className="sg-floating-bubble-mark">SG</span>
+        <span className="sg-floating-copy">
+          <span className="sg-floating-title">Open Sidebar</span>
+          <span className="sg-floating-subtitle">
+            {activeView === "chat" ? "Chat live view" : "AI reply assist"}
+          </span>
+        </span>
+      </button>
     </div>
   )
 }
